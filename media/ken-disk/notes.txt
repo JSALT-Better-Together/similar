@@ -1,0 +1,44 @@
+
+export JSALTsrc=/media/ken-disk/githubs/JSALT_Better_Together/src
+export JSALTdir=/media/ken-disk/JSALTdir/
+export proposed=$JSALTdir/semantic_scholar/embeddings/proposed
+export specter=$JSALTdir/semantic_scholar/embeddings/specter
+export specter2=$JSALTdir/semantic_scholar/embeddings/specter2
+export scincl=$JSALTdir/semantic_scholar/embeddings/scincl
+export specterDoug=$JSALTdir/semantic_scholar/embeddings/specter2_from_doug
+
+/usr/lib/cgi-bin/similar
+/var/www/html/similar.html
+/var/log/apache2/error.log
+
+
+
+
+<script>
+function mySubmit() {
+  let emb = document.forms["embedding"].value;
+  let search = document.forms["search"].value;
+  let author = document.forms["author"].value;
+    alert("emb: ".concat(emb));
+    alert("search: ".concat(search));
+    alert("author: ".concat(author));
+}
+</script>
+
+
+http://34.204.188.58/cgi-bin/similar?CorpusId=5341493&embedding=one_hop_cached&limit=10&score_by_embeddings=all
+
+
+echo 198229624 | $JSALTsrc/C/faster_near_with_floats --n_candidates 14 --offset 1000 --dir $specterDoug $specterDoug/idx.*.i > /tmp/x
+
+p = os.popen("echo 198229624 | $JSALTsrc/C/faster_near_with_floats --n_candidates 14 --offset 1000 --dir $specterDoug $specterDoug/idx.*.i")
+
+
+# deploy
+cp /usr/lib/cgi-bin/similar /usr/lib/cgi-bin/similar.bak
+cp /var/www/html/similar.html /var/www/html/similar.html.bak
+cp /usr/lib/cgi-bin/similar.BETA /usr/lib/cgi-bin/similar
+cp /var/www/html/similar.BETA.html /var/www/html/similar.html
+
+tar -czf -  /media/ken-disk/notes.txt /usr/lib/cgi-bin/similar.BETA /usr/lib/cgi-bin/similar /var/www/html/similar.BETA.html /var/www/html/similar.html > /media/ken-disk/similar.tar.gz
+scp /media/ken-disk/similar.tar.gz k.church@xfer.discovery.neu.edu:to_go
