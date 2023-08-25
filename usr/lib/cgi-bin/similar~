@@ -1,0 +1,955 @@
+#!/usr/bin/env python3 
+
+# Import modules for CGI handling 
+import cgi, cgitb, datetime
+import sys,os,struct,json,requests
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+# change this to change versions
+similar='similar'
+
+# Create instance of FieldStorage 
+form = cgi.FieldStorage() 
+
+# update logs
+with open('/media/ken-disk/logs/' + similar + '.log', 'a') as fd:
+    print('\t'.join(map(str, [datetime.datetime.now(), os.environ['REMOTE_ADDR'], form])), file=fd)
+
+# Get data from fields
+input_corpusid = form.getvalue('CorpusId')
+input_author = form.getvalue('author')
+input_authorid = form.getvalue('authorId')
+input_query = form.getvalue('query')
+input_search = form.getvalue('search')
+input_npapers = form.getvalue('limit')
+input_embedding = form.getvalue('embedding')
+output_mode = form.getvalue('output_mode')
+input_offset = form.getvalue('offset')
+input_title_width = form.getvalue('title_width')
+input_cell_width = form.getvalue('cell_width')
+input_verbose = form.getvalue('verbose')
+input_sort_by = form.getvalue('sort_by')
+# score_by_embeddings = form.getvalue('score_by_embeddings')
+input_score_by_embeddings = 'all'
+
+def safe(s):
+    return s.replace('\n', ' ').replace('\t', ' ').replace('\r', ' ')
+
+# default values
+
+if input_sort_by is None:
+    input_sort_by = 'score'
+
+if input_offset is None:
+    input_offset = 1000
+
+if input_title_width is None:
+    input_title_width = 200
+
+if input_cell_width is None:
+    input_cell_width = 250
+
+if not input_embedding is None and input_embedding == 'None':
+    input_embedding = None
+
+if input_npapers is None:
+    input_npapers = 10
+input_npapers = int(input_npapers)
+
+# normalization rules
+if input_authorid is None and not input_author is None and input_author.isdigit():
+    input_authorid = input_author
+    input_author = None
+
+if input_corpusid is None and not input_search is None and input_search.isdigit():
+    input_corpusid = input_search
+    input_search = None
+
+apikey="Us7RqgayhnaQkEKiEnbGH8EBneX5Jud14Mq3Uzpe"
+
+
+def truncate_candidates(cand):
+    if len(cand) > input_npapers:
+        return cand[0:input_npapers]
+    return cand
+
+s2_memos = {}
+s2_todo = []
+
+def s2_request(ids):
+    for i in ids:
+        s = id_ify(str(i))
+        if not s in s2_todo:
+            s2_todo.append(s)
+
+def s2_flush():
+    global s2_todo
+    global s2_memos
+
+    if not input_verbose is None:
+        print('<p>s2_flush (before): s2_memos.keys() = ' + str(s2_memos.keys()))
+        print('<p>s2_todo (before): ' + str(s2_todo))
+    ids = [id_ify(str(i)) for i in s2_todo if not i in s2_memos]
+
+    if not input_verbose is None:
+        print('<p>s2_flush, ids: ' + str(ids))
+
+    if len(ids) <= 0: return
+    r = requests.post(
+        'https://api.semanticscholar.org/graph/v1/paper/batch',
+        params={'fields': 'title,citationCount,url,externalIds,authors,referenceCount,year'},
+        json={"ids": ids},
+        headers={"x-api-key": apikey}).json()
+    if not input_verbose is None:
+        print('<p>r: ' + str(r))
+    for rec in r:
+
+        if not rec is None and 'paperId' in rec and not rec['paperId'] is None:             
+            s2_memos[rec['paperId']] = rec
+
+        if not rec is None and 'externalIds' in rec and 'CorpusId' in rec['externalIds']:
+            corpusid = rec['externalIds']['CorpusId']
+            # print('rec[%s]: = %s' % (str(corpusid), str(rec)), file=sys.stderr)
+            s2_memos[id_ify(str(corpusid))] = rec
+    if not input_verbose is None:
+        print('<p>s2:flush (after): s2_memos.keys() = ' + str(s2_memos.keys()))
+    s2_todo = []
+
+# 'specter2' : { 'record_size' : 768, 'directory' : '/media/john-disk/files/specter2'},
+
+embedding_configs = { 'proposed' : 
+                      { 'record_size' : 280, 'directory' : '/media/ken-disk/JSALTdir/semantic_scholar/embeddings/proposed'},
+                      'scincl' : 
+                      { 'record_size': 768, 'directory' : '/media/ken-disk/JSALTdir/semantic_scholar/embeddings/scincl'},
+                      'specter2_from_doug': 
+                      {'record_size': 768, 'directory' : '/media/ken-disk/JSALTdir/semantic_scholar/embeddings/specter2_from_doug'}
+                     }
+
+def map_int64(fn):
+    fn_len = os.path.getsize(fn)
+    return np.memmap(fn, dtype=int, shape=(int(fn_len/8)), mode='r')
+
+def map_int32(fn):
+    fn_len = os.path.getsize(fn)
+    return np.memmap(fn, dtype=np.int32, shape=(int(fn_len/4)), mode='r')
+
+def map_float32(fn):
+    fn_len = os.path.getsize(fn)
+    return np.memmap(fn, dtype=np.float32, shape=(int(fn_len/4)), mode='r')
+
+def map_float64(fn):
+    fn_len = os.path.getsize(fn)
+    return np.memmap(fn, dtype=float, shape=(int(fn_len/8)), mode='r')
+
+
+
+embedding_to_bigram_filename = { 'proposed' : '/media/john-disk/files/proposed/bigrams',
+                                 'specter' : '/media/john-disk/files/specter/bigrams',
+                                 'specter2' : '/media/john-disk/files/specter2/bigrams',
+                                 'specter2_from_doug' : '/media/ken-disk/JSALTdir/semantic_scholar/embeddings/specter2_from_doug/bigrams',
+                                 'scincl' : '/media/ken-disk/JSALTdir/semantic_scholar/embeddings/scincl/bigrams'}
+
+one_hop_filename = '/media/ken-disk/JSALTdir/semantic_scholar/graphs/citations.G.sym'
+one_hop_config = {'filename': '/media/ken-disk/JSALTdir/semantic_scholar/graphs/citations.G.sym',
+                  'references_and_citations_filename': '/media/ken-disk/JSALTdir/semantic_scholar/graphs/references_and_citations.i',
+                  'cumX' : None,
+                  'Y': None,
+                  'references_and_citations' : None}
+
+def maybe_init_embedding_configs():
+    for key in embedding_configs:
+        if not 'floats' in embedding_configs:
+            K = embedding_configs[key]['record_size']
+            dir = embedding_configs[key]['directory']
+            config = embedding_configs[key]
+            config['floats'] = map_float32(dir + '/embedding.f').reshape(-1, K)
+            config['old_to_new'] = map_int32(dir + '/map.old_to_new.i')
+            config['new_to_old'] = map_int32(dir + '/map.new_to_old.i')
+
+def maybe_init_one_hop_config():
+    if one_hop_config['Y'] is None:
+        fn = one_hop_config['filename']
+        one_hop_config['cumX'] = map_int64(fn + '.X.i.idx')
+        one_hop_config['Y'] = map_int32(fn + '.Y.i')
+        one_hop_config['references_and_citations'] = map_int32(one_hop_config['references_and_citations_filename']).reshape(-1,2)
+
+table_columns = ['score', 'citationCount', 'Paper', 'Authors', 'year', 'More like this']
+if input_score_by_embeddings=='all':
+    maybe_init_embedding_configs()
+    for key in embedding_configs:
+        table_columns.append(key)
+
+if input_embedding is None:
+    input_embedding='proposed'
+
+bigrams_idx = bigrams_file = None
+if input_embedding in embedding_to_bigram_filename:
+    bigrams_file = embedding_to_bigram_filename[input_embedding]
+    bigrams_idx = map_int64(bigrams_file + '.idx')
+
+def id_ify(s):
+    if len(s) == 40: return s
+    for prefix in ['CorpusId:', 'PMID:', 'ACL:', 'arXiv:', 'DBLP:', 'MAG:', 'PMID:']:
+        if s.startswith(prefix):
+            return s
+    if '/' in s: return s
+    return 'CorpusId:' + s
+
+def fetch_from_semantic_scholar(corpusId):
+    try:
+        my_api = 'https://api.semanticscholar.org/graph/v1/paper/CorpusId:'
+        cmd = my_api + str(corpusId) + '/?fields=title,url'
+        j = requests.get(cmd, headers={"x-api-key": apikey}).json()
+        # print(j, file=sys.stderr)
+        return '<a href="%s">%s</a>' % (j['url'], j['title'])
+    except:
+        return str(corpusId)
+
+def fetch_corpusId(id):
+    try:
+        cmd = 'https://api.semanticscholar.org/graph/v1/paper/' + str(id) + '/?fields=externalIds'
+        j = requests.get(cmd, headers={"x-api-key": apikey}).json()
+        #print(j, file=sys.stderr)
+        return j['externalIds']['CorpusId']
+    except:
+        return None
+
+idx_memos = {}
+
+def lookup_paper(paper):
+    if not bigrams_file is None:
+        return lookup_paper_in_bigrams_file(paper)
+
+    elif input_embedding in embedding_configs and 'directory' in embedding_configs[embedding]:
+        return lookup_paper_in_embedding_directory(paper)
+
+    elif input_embedding == 's2_recommendations':
+        return lookup_paper_with_s2_recommendations(paper)
+
+    elif input_embedding == 'one_hop':
+        return lookup_paper_in_one_hop_neighborhood_without_cache(paper)
+
+    elif input_embedding == 'one_hop_cached':
+        return lookup_paper_in_one_hop_neighborhood_with_cache(paper)
+
+def lookup_paper_in_embedding_directory(paper):
+
+    d = embedding_configs[embedding]['directory']
+
+    p = os.popen('echo %s | /media/ken-disk/githubs/JSALT_Better_Together/src/C/faster_near_with_floats --skip_cos --n_candidates %d --offset %d --dir %s %s/idx.*.i' % (str(paper), 2+input_npapers, input_offset, d, d))
+    res = []
+    for line in p:
+        rline = line.strip()
+        if len(rline) > 0:
+            score,id1,id2 = rline.split('\t')
+            if id1 != id2:
+                res.append([float(score), int(id1), int(id2)])
+    return(sorted(res, key=lambda r: r[0], reverse=True))
+
+def lookup_paper_in_one_hop_neighborhood_with_cache(paper):
+    if not input_verbose is None:
+        print('with cache', file=sys.stderr)
+    maybe_init_one_hop_config()
+    cX = one_hop_config['cumX']
+    if cX is None: return []
+    query = id_to_int(paper)
+    if query < 0: return []
+    if query+1 >= len(cX): return []
+    start = cX[query]
+    end = cX[query+1]
+    neighborhood = one_hop_config['Y'][start:end]
+    refs_and_cites = one_hop_config['references_and_citations']
+    counts = refs_and_cites[neighborhood,0] + refs_and_cites[neighborhood,1]
+    id1 = np.zeros(len(neighborhood), dtype=np.int32) + query
+    return [tup for tup in zip(counts,id1, neighborhood)]
+
+def get_counts_from_ref(ref):
+    c = 0
+    if ref is None: return c
+    if 'citationCount' in ref and not ref['citationCount'] is None: c += ref['citationCount']
+    if 'referenceCount' in ref and not ref['referenceCount'] is None: c += ref['referenceCount']
+    return c
+
+def get_corpusid_from_rec(rec):
+    if rec is None: return None
+    if not 'externalIds' in rec: return None
+    if rec['externalIds'] is None: return None
+    if not 'CorpusId' in rec['externalIds']: return None
+    return rec['externalIds']['CorpusId']
+
+def lookup_paper_in_one_hop_neighborhood_without_cache(paper):
+    # print('without cache', file=sys.stderr)
+    refs = papers_by_citations(paper)
+    res = [ (get_counts_from_ref(ref), paper, get_corpusid_from_rec(ref)) for ref in refs]
+    return res
+
+def lookup_paper_with_s2_recommendations(paper):
+    cand = papers_by_s2_recommendations(paper)
+    cand = truncate_candidates(cand)
+    lcand = len(cand)
+    return [ (lcand-i, paper, c) for i,c in enumerate(cand) ]
+
+def id_to_int(paper):
+    if paper.startswith('CorpusId:'):
+        return int(paper.split(':')[1])
+    else: return None
+
+def lookup_paper_in_bigrams_file(paper):
+    if bigrams_file is None: return []
+    if paper is None: return []
+    try:
+        query = id_to_int(paper)
+    except:
+        return []
+    if query < 0: return []
+    if query+1 >= len(bigrams_idx): 
+        print('lookup_paper: query (%d) exceeds len(idx) (%d)' % (query, len(bigrams_idx)), file=sys.stderr)
+        return []
+    start = bigrams_idx[query]
+    end = bigrams_idx[query+1]
+    nbytes = 12*(end - start)
+    with open(bigrams_file, 'rb') as fd:
+        fd.seek(start * 12)
+        bytes = fd.read(nbytes)
+        res = truncate_candidates(sorted([record for record in struct.iter_unpack('fii', bytes)], key=lambda rec: rec[0], reverse=True))
+        return res
+
+def citations(p):
+    if 'citationCount' in p and not p['citationCount'] is None:
+        return p['citationCount']
+    else:
+        return 0
+
+def papers_by_citations(my_id):
+    # print('<br>papers_by_citations: ' + str(my_id))
+    my_id = id_ify(str(my_id))
+    cmd = 'https://api.semanticscholar.org/graph/v1/paper/' + str(my_id) + '/?fields=url,externalIds,title,year,authors,referenceCount,citationCount,references,references.externalIds,references.citationCount,references.title,citations,citations.externalIds,citations.citationCount,citations.title,citations.url,references.url'
+
+    j = requests.get(cmd, headers={"x-api-key": apikey}).json()
+
+    refs = []
+    if 'references' in j and not j['references'] is None:
+        refs = j['references']
+
+    cites  = []
+    if 'citations' in j and not j['citations'] is None:
+        cites = j['citations']
+
+    papers = refs
+    papers.append(cites)
+
+    return sorted(papers, reverse=True, key=citations)
+
+
+def papers_by_s2_recommendations(my_id):
+    my_id = id_ify(str(my_id))
+    cmd = 'https://api.semanticscholar.org/recommendations/v1/papers/forpaper/' + str(my_id) + '/?from=all-cs&fields=title,year,authors,referenceCount,citationCount,externalIds'
+
+    j = requests.get(cmd, headers={"x-api-key": apikey}).json()
+    if not 'recommendedPapers' in j:
+        print('<p>Semantic Scholar API did not recommend any papers; the API returned %s</p>' % (str(j)))
+        return []
+
+    recommendations = j['recommendedPapers']
+    paperids = [ rec['paperId'] for rec in recommendations if 'paperid' in rec ]
+    ids = [ get_corpusid_from_rec(rec) for rec in recommendations]
+    ids = [ id_ify(str(my_id)) for my_id in ids if not my_id is None]
+
+    s2_request(paperids)
+    s2_request(ids)
+    s2_flush()
+    return ids
+
+# def papers_by_s2_recommendations(my_id):
+#     my_id = id_ify(str(my_id))
+#     cmd = 'https://api.semanticscholar.org/recommendations/v1/papers/forpaper/' + str(my_id) + '/?fields=title,year,authors,referenceCount,citationCount,externalIds'
+
+#     j = requests.get(cmd, headers={"x-api-key": apikey}).json()
+#     recommendations = j['recommendedPapers']
+#     paperids = [ rec['paperId'] for rec in recommendations if 'paperid' in rec ]
+#     ids = [ get_corpusid_from_rec(rec) for rec in recommendations]
+#     ids = [ id_ify(str(my_id)) for my_id in ids if not my_id is None]
+
+#     s2_request(paperids)
+#     s2_request(ids)
+#     s2_flush()
+#     return ids
+
+def href_ify(id, hrefs):
+    if id in hrefs:
+        return hrefs[id]
+    else:
+        return '<tr><td>NA</td><td>%s</td></tr>' % id
+
+def get_citations(rec):
+    if rec is None: return 0
+    if not 'citationCount' in rec: return 0
+    return rec['citationCount']
+
+def get_paper_link(rec):
+    if rec is None: return 'NA'
+
+    if not 'url' in rec: 
+        corpusid = get_corpusid_from_rec(rec)
+        if corpusid is None: return rec['title']
+        rec['url'] = 'https://www.semanticscholar.org/paper/CorpusId:' + str(corpusid)
+
+    try:
+        return '<a href="%s">%s</a>' % (rec['url'], rec['title'])
+    except:
+        return 'NA'
+
+def get_more_link(rec):
+    # print(rec)
+    try:
+        my_id = get_corpusid_from_rec(rec)
+        if my_id is None: return 'similar to this (NA)'
+        return '<a href="%s?CorpusId=%s&embedding=%s">similar to this</a>' % (similar, my_id, input_embedding)
+    except:
+        return 'similar to this (NA)'
+
+def do_citations(papers):
+
+    r = requests.post(
+        'https://api.semanticscholar.org/graph/v1/paper/batch',
+        params={'fields': 'title,year,citationCount,url,externalIds'},
+        json={"ids": ['CorpusId:' + str(id) for id in papers]},
+        headers={"x-api-key": apikey}).json()
+
+    r = truncate_candidates(sorted(r, reverse=True, key=citations))
+
+    for rec in r:
+        paper = get_corpusid_from_rec(rec)
+        print('<table><tr><td><b>Input paper:</b></td> <td>%d</td> <td>%s</td></tr></table>' % (get_citations(rec), get_paper_link(rec)))
+        cites = truncate_candidates(papers_by_citations(paper))
+        print('<table>')
+        for rec in cites:
+            print('<tr><td>%d</td><td>%s</td><td>%s</td></tr>' % (get_citations(rec), get_paper_link(rec), get_more_link(rec)))
+        print('</table>')
+
+def paper_to_figure_of_merit(paper, field):
+    try:
+        spaper = id_ify(str(paper))
+        if not spaper in s2_memos:
+            return 0
+        if not field in s2_memos[spaper]:
+            return 0
+        val = s2_memos[spaper][field]
+        if isinstance(val, (float, int)):
+            return val
+        return float(val)
+    except:
+        return 0
+
+
+def rec_to_figure_of_merit(rec, field):
+    try:
+        val = rec[field]
+        if isinstance(val, (float, int)):
+            return val
+        return float(val)
+    except:
+        return 0
+
+def sort_papers(papers, field, reverse=True):
+    if field is None: return papers
+    return sorted(papers, key=lambda x: paper_to_figure_of_merit(x, field), reverse=reverse)
+
+def sort_authors(authors, field, reverse=True):
+    if field is None: return authors
+    return sorted(authors, key=lambda x: rec_to_figure_of_merit(x, field), reverse=reverse)
+
+
+
+# ['score', 'citationCount', 'link_to_paper', 'more_like_this']
+
+def col_link(col):
+    if input_corpusid is None: return col
+    if col in ['Paper', 'Authors', 'More like this']: return col
+    return '<a href=%s?CorpusId=%s&embedding=%s&limit=%d&sort_by=%s>%s</a>' % (similar, input_corpusid, input_embedding, input_npapers, col, col)
+
+def print_header_row(columns):
+    if not input_corpusid is None:
+        columns = [col_link(col) for col in columns]
+    print('<tr><th>' + '</th><th>'.join(columns) + '</th></tr>')
+
+def get_vector(emb_config, ipaper):
+    if isinstance(ipaper, str):
+        ipaper = id_to_int(ipaper)
+    if not isinstance(ipaper, int):
+        return None
+    m = emb_config['old_to_new']
+    if ipaper <= 0 or ipaper >= len(m): return None
+    new_paper = m[ipaper]
+    if new_paper <= 0: return None
+    floats = emb_config['floats']
+    return floats[new_paper,:].reshape(-1)
+
+def score_embedding(emb_config, ipaper, iquery):
+    vec1 = get_vector(emb_config, ipaper)
+    if vec1 is None: return ''
+    vec2 = get_vector(emb_config, iquery)
+    if vec2 is None: return ''
+    return np.round(cosine_similarity(vec1.reshape(1,-1), vec2.reshape(1,-1)), 3)[0,0]
+
+plot_filenames = 0
+def get_plot_filename():
+    global plot_filenames
+    plot_filenames += 1
+    fn = '/var/www/html/tmp/plots/%d.%05d.png' % (os.getpid(), plot_filenames)
+    url = '../tmp/plots/%d.%05d.png' % (os.getpid(), plot_filenames)
+    return fn, url
+
+def old_score_embedding(emb_config, ipaper, iquery):
+    if not input_verbose is None:
+        print('score_embedding: ipaper=%s, iquery=%s' % (str(ipaper), str(iquery)))
+
+    m = emb_config['old_to_new']
+    if ipaper <= 0 or ipaper >= len(m): return ''
+    if iquery is None or iquery <= 0 or iquery >= len(m): return ''
+    new_paper = m[ipaper]
+    new_query = m[iquery]
+    floats = emb_config['floats']
+    return np.round(cosine_similarity(floats[new_paper,:].reshape(1,-1), 
+                                      floats[new_query,:].reshape(1,-1)), 3)[0,0]
+
+def abbrev_title(title):
+    if len(title) > input_title_width:
+        return title[0:input_title_width]+'...'
+    return title
+
+def abbrev_author(author):
+    if len(author) > input_title_width:
+        return author[0:input_title_width]+'...'
+    return author
+
+def author_ify(a):
+    return '<a href="%s?authorId=%s&embedding=%s&limit=%d">%s</a>' % (similar, a['authorId'], input_embedding, input_npapers, abbrev_author(a['name']))
+
+def cell_width(cell, width=1):
+    # print('cell_width: ' + str(input_cell_width), file=sys.stderr)
+    return '<table width="%d"> <tr><td><span style="word-wrap: break-word;">%s</span></td></tr></table>' % (width*input_cell_width, cell)
+    
+
+def simple_field_ify(paper, column, query):
+    try:
+        if query is None: iquery = query
+        else: iquery = id_to_int(query)
+    except:
+        iquery = query
+
+    spaper = id_ify(str(paper))
+    if not spaper in s2_memos: return ''
+    s2_memo = s2_memos[spaper]
+
+    if column == 'Paper':
+        # print('s2_memo: ' + str(s2_memo), file=sys.stderr)
+        url = title = None
+        if 'url' in s2_memo: url = s2_memo['url']
+        if 'title' in s2_memo: title = abbrev_title(safe(s2_memo['title']))
+        if url is None:
+            url = 'https://api.semanticscholar.org/' + spaper
+            # url = 'https://www.semanticscholar.org/paper/' + spaper
+        if not url is None and not title is None:
+            return cell_width('<a href="%s">%s</a>' % (url, title), 2)
+        if not title is None:
+            return title
+        return ''
+
+    if column == 'Authors':
+        if 'authors' in s2_memo: 
+            authors = s2_memo['authors']
+            if len(authors) > 3:
+                return cell_width(', '.join([author_ify(authors[0]), author_ify(authors[1]), '...', author_ify(authors[-1])]))
+            else:
+                return cell_width(', '.join([author_ify(a) for a in authors]))
+
+    if column == 'More like this':
+        return '<a href="%s?CorpusId=%s&embedding=%s&limit=%d">similar to this</a>' % (similar, paper, input_embedding, input_npapers)
+
+    if column in embedding_configs:
+        try:
+            return score_embedding(embedding_configs[column], id_to_int(spaper), iquery)
+        except:
+            return ''
+
+    if column in s2_memo:
+        return str(s2_memo[column])
+
+    return ''
+
+def field_ify(paper, column, query):
+    f = str(simple_field_ify(paper, column, query))
+    if query is None: return f
+    try:
+        if id_to_int(paper) == id_to_int(query):
+            return '<b>' + f + '</b>'
+    except:
+        return f
+    return f
+
+def print_row(paper, columns, query):
+    vals = [ field_ify(paper, c, query) for c in columns]
+    print('<tr><td>' + '</td><td>'.join(vals) + '</td></tr>')
+
+def sort_table_rows(query, matches, columns):
+    if (not query is None) and (input_sort_by in embedding_configs):
+        iquery = id_to_int(query)
+        for paper in matches:
+            spaper = id_ify(str(paper))
+            if spaper in s2_memos and not input_sort_by in s2_memos:
+                s2_memos[spaper][input_sort_by] = score_embedding(embedding_configs[input_sort_by], id_to_int(spaper), iquery)
+
+    return sort_papers(matches, input_sort_by, reverse=True)
+
+def plot_cosine_scores(query, papers, col):
+    if not col in embedding_configs: return
+    config = embedding_configs[col]
+    vectors = []
+    qvec = get_vector(config, query)
+    if not qvec is None: vectors.append(qvec)
+    for p in papers:
+        pvec = get_vector(config, p)
+        if not pvec is None: vectors.append(pvec)
+    if len(vectors) == 0: return None
+    fn,url = get_plot_filename()
+    plt.clf()
+    plt.imshow(cosine_similarity(np.array(vectors)))
+    plt.title(col)
+    plt.colorbar()
+    plt.savefig(fn)
+    print('<img src="%s" width="25%%"\>' % url)
+
+def table_ify(query, sorted_matches, columns, style=None):
+
+    if style is None: print('<table>')
+    else: print('<table style="%s">' % style)
+
+    print_header_row(columns)
+    if not query is None:
+        print_row(query, columns, query)
+    for m in sorted_matches:
+        print_row(m, columns, query)
+    print('</table>')
+        
+def print_table_of_contents(papers):
+    print('<h2 id="table_of_contents">Table of Contents</h2>')
+    print('<ol style="background-color:rgba(225, 255, 255);">')
+    for paper in papers:
+        if paper is None: continue
+        spaper = id_ify(str(paper))
+        if not spaper in s2_memos:
+            s2_memos[spaper] = {}
+        s2_memo = s2_memos[spaper]
+        if 'title' in s2_memo: title = abbrev_title(safe(s2_memo['title']))
+        else: title = spaper            
+        print('<li><a href="#%s">%s</a></li>' % (spaper, title))
+    print('</ol>')            
+
+
+def print_table_of_contents_for_authors(authors):
+    # print('authors: ' + str(authors))
+    print('<h2 id="table_of_contents">Table of Contents</h2>')
+    print('<ol style="background-color:rgba(225, 255, 255);">')
+    for rec in authors:
+        if 'name' in rec and 'authorId' in rec: 
+            cites = hIndex = 0
+            if 'hIndex' in rec: hIndex = rec['hIndex']
+            if 'citationCount' in rec: cites = rec['citationCount']
+            print('<li><a href="#%s">%s</a>, hIndex: %d, citationCount: %d</li>' % (rec['authorId'], rec['name'], hIndex, cites))
+    print('</ol>')            
+
+def do_papers(papers, sort_field=None, reverse=False):
+    if papers is None:
+        print('something is wrong')
+        return
+    try:
+        papers = [ id_ify(str(paper)) for paper in papers ]
+    except:
+        print('something is wrong')
+        print('papers: ' + str(papers))
+        return
+
+    if not input_verbose is None:
+        print('papers: ' + str(papers))
+
+    s2_request(papers)
+    s2_flush()
+
+    papers = truncate_candidates(sort_papers(papers, sort_field, reverse=reverse))
+    res = [lookup_paper(paper) for paper in papers]
+
+    if not output_mode is None:
+        if output_mode == 'json':
+            print({'results' : res })
+            return
+
+    for res1 in res:
+        # s2_request([id1 for score,id1,id2 in res1])
+        s2_request([id2 for score,id1,id2 in res1])
+    s2_flush()
+
+    for res1 in res:
+        for score,id1,id2 in res1:
+            sid2 = str(id2)
+            if not sid2 in s2_memos: 
+                s2_memos[sid2]= {}
+            s2_memos[sid2]['score'] = np.round(score,3)
+
+    for paper,res1 in zip(papers, res):
+        spaper = id_ify(str(paper))
+        lres1 = len(res1)
+        if lres1 == 0: continue
+        res1 = truncate_candidates(sorted(res1, key=lambda x: x[0], reverse=True))
+
+        ids2 = [id2 for score,id1,id2 in res1]
+        if not spaper in s2_memos: s2_memos[spaper]= {}
+        s2_memos[spaper]['found'] = ids2
+
+        for score,id1,id2 in res1:
+            sid2 = id_ify(str(id2));
+            if not sid2 in s2_memos: s2_memos[sid2] = {}
+            s2_memos[sid2]['score'] = np.round(score,3)
+
+
+    print_table_of_contents(papers)
+
+    for paper in papers:
+        spaper = id_ify(str(paper))
+        found = []
+        if spaper in s2_memos and 'found' in s2_memos[spaper]:
+            found = s2_memos[spaper]['found']
+        if len(found) == 0: continue
+        found = sort_table_rows(spaper, found, table_columns)
+
+        label = spaper
+        if spaper in s2_memos and 'title' in s2_memos[spaper]:
+            label = s2_memos[spaper]['title']
+
+        print('<h3 id="%s">Paper: %s</h3>' % (spaper, label))
+        print('<a href="#table_of_contents">Top</a>')
+
+        if len(papers) == 1:
+            print('<table style="background-color:rgba(225, 255, 255);"><tr>')
+            for col in table_columns:
+                plot_cosine_scores(spaper, found, col)        
+            print('</tr></table>')
+
+        table_ify(spaper, found, table_columns, style="background-color:rgba(255, 255, 225);")
+
+def do_authorId(authorId):
+    fields = '?fields=name,papers,papers.citationCount,papers.externalIds,papers.title,hIndex,citationCount,externalIds,url,name,affiliations,papers.authors,papers.year,papers.url,papers.externalIds'
+    rec = requests.get('https://api.semanticscholar.org/graph/v1/author/' + authorId + fields, headers={"x-api-key": apikey}).json()
+    
+    ids = []
+    for p in rec['papers']:
+        try: 
+            corpusId = get_corpusid_from_rec(p)
+            if corpusId is None: continue
+            corpusId = id_ify(str(corpusId))
+            ids.append(corpusId)
+        except:
+            continue
+        s2_memos[corpusId] = p
+
+    if len(ids) == 0:
+        print('no matches: authorid = ' + str(authorId))
+        return
+
+    ids = truncate_candidates(sort_papers(ids, 'citationCount', reverse=True))
+    print('Author: ' + str(rec['name']))
+    ids = sort_table_rows(None, ids, table_columns)
+
+    print('<table style="background-color:rgba(225, 255, 255);"><tr>')
+    for col in table_columns:
+        plot_cosine_scores(None, ids, col)        
+    print('</tr></table>')
+
+    table_ify(None, ids, table_columns)
+
+def do_author(author):
+    fields = '&fields=name,papers,papers.citationCount,papers.externalIds,papers.title,hIndex,citationCount,externalIds,url,name,affiliations,papers.authors,papers.year'
+    j = requests.get('https://api.semanticscholar.org/graph/v1/author/search?query=' + str(author) + fields, headers={"x-api-key": apikey}).json()
+    
+    if not 'data' in j:
+        print('<p>Semantic Scholar API: %s --> %s' % (str(author), str(j)))
+
+    author_recs =  truncate_candidates(sort_authors(j['data'], 'hIndex', reverse=True))
+    print_table_of_contents_for_authors(author_recs)
+    
+    papers = []
+    for rec in author_recs:
+        apapers = []
+        if not 'papers' in rec: continue
+        for paper_rec in rec['papers']:
+            cid = get_corpusid_from_rec(paper_rec)
+            if cid is None: continue
+            cid = id_ify(str(cid))
+            if not cid in s2_memos:
+                s2_memos[cid] = paper_rec
+            apapers.append(cid)
+        apapers = truncate_candidates(sort_papers(apapers, 'citationCount', reverse=True))
+        rec['found'] = apapers
+        for p in apapers: papers.append(p)
+
+    print('<table style="background-color:rgba(225, 255, 255);"><tr>')
+    for col in table_columns:
+        plot_cosine_scores(None, papers, col)        
+    print('</tr></table>')
+
+    for rec in author_recs:
+        print('<h3 id="%s">Author: %s</h3>' % (rec['authorId'], rec['name']))
+        print('<a href="#table_of_contents">Top</a>')
+        table_ify(None, rec['found'], table_columns)
+
+def old_do_author(author):
+    fields = '&fields=name,papers,papers.citationCount,papers.externalIds,papers.title,hIndex,citationCount,externalIds,url,name,affiliations,papers.authors,papers.year,papers.url'
+    j = requests.get('https://api.semanticscholar.org/graph/v1/author/search?query=' + author + fields, headers={"x-api-key": apikey}).json()
+    for rec in j['data']:
+        if not 'hIndex' in rec or rec['hIndex'] is None:
+            rec['hIndex'] = 0
+
+    for rec in sorted(j['data'],
+                      reverse=True,
+                      key=lambda x: x['hIndex']):
+        candidates = truncate_candidates(sorted([ (rec['authorId'], rec['hIndex'], rec['name'],
+                                                   p['externalIds']['CorpusId'], p['citationCount'], safe(p['title']),
+                                                   '|'.join([a['name'] for a in p['authors']]))
+                                                  for p in rec['papers'] if 'externalIds' in p], 
+                                                key= lambda pair: pair[4], reverse=True))
+        print('<table><tr><th>Author</th><th>hIndex</th><th>Citations</th><th>title</th><th>Similar to this</th></th></tr>')
+        for rec in candidates:
+            authorId,hIndex,name,corpusId,citationCount,title,authors = rec
+            # more =  get_more_link(rec)
+            more = '<a href="%s?CorpusId=%s">similar to this</a>' % (similar, corpusId)
+            print('<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>' % (str(name), str(hIndex), str(citationCount), title, more))
+        print("</table>")
+
+
+
+def candidates_from_query_or_search(recs, id_key):
+    paperids = [id_ify(p[id_key]) for p in recs if id_key in p]
+    if not input_verbose is None:
+        print('<p>paperids: ' + str(paperids))
+    s2_request(paperids)
+    if not input_verbose is None:
+        print('<p>s2_todo (paperids): ' + str(s2_todo))
+    s2_flush()
+
+    if not input_verbose is None:
+        print('<br>s2_memos.keys(): ' + str(s2_memos.keys()))
+
+    r = truncate_candidates(sort_papers([s2_memos[p] for p in paperids if p in s2_memos], 'citationCounts'))
+
+    if not input_verbose is None:
+        print('<br>r: ' + str(r))
+
+    ids = []
+    for rec in r:
+        corpusid = get_corpusid_from_rec(rec)
+        if corpusid is None: continue
+        ids.append(corpusid)
+
+    # ids = [ m['externalIds']['CorpusId'] for m in r if 'externalIds' in m and 'CorpusId' in m['externalIds']]
+    return ids
+
+def candidates_from_query(query):
+    j = requests.get('https://api.semanticscholar.org/graph/v1/paper/autocomplete?query=' + query, headers={"x-api-key": apikey}).json()
+    if not input_verbose is None:
+        print('j: ' + str(j))
+    if not 'matches' in j:
+        print('no matches for query: ' + str(query))
+        return []
+
+    return candidates_from_query_or_search(j['matches'], 'id')
+
+def candidates_from_search(search):
+    j = requests.get('https://api.semanticscholar.org/graph/v1/paper/search?fields=externalIds,citationCount,year&query=' + search, headers={"x-api-key": apikey}).json()
+
+    if not input_verbose is None:
+        print('<p>candidates_from_search:  ' + str(j))
+    if not 'data' in j:
+        print('<p>no matches for search: ' + str(search))
+        print('<p>j: ' + str(j))
+        return []
+
+    return candidates_from_query_or_search(j['data'], 'paperId')
+
+print("Content-type:text/html\r\n\r\n")
+print('<html>')
+print("<head>")
+print('<title>Similar</title><meta charset="UTF-8">')
+print("</head>")
+print("<body>")
+
+if not input_author is None:
+    print('<h1>Author Search Results</h1>')
+else:
+    print('<h1>Paper Search Results</h1>')
+
+print('<div style="background-color:rgba(255, 255, 225);">')
+print('<a href="../%s.html">Home Page</a>' % (similar))
+
+def print_more_results():
+    q = None
+    fields = '&embedding=%s&limit=%d&sort_by=%s' % (input_embedding, 2*input_npapers, input_sort_by)
+    for val,field in [(input_corpusid, 'CorpusId'),
+                      (input_authorid, 'authorId'),
+                      (input_author, 'author'),
+                      (input_search, 'search'),
+                      (input_query, 'query')]:
+        if val is None: continue
+        print('<a href="%s?%s=%s%s">More Results</a>' % (similar, str(field), str(val), fields))
+        return
+
+print_more_results()
+
+for lab,val in [('Author', input_author), 
+                ('AuthorId', input_authorid), 
+                ('Query', input_query),
+                ('Search', input_search),
+                ('CorpusId', input_corpusid),
+                ('Limit', input_npapers),
+                ('Sort by', input_sort_by),
+                ('Embedding', input_embedding)]:
+    if not val is None:
+        print('<br>' + lab + ': ' + str(val))
+
+# print('<br>Embedding: %s, Limit: %d, Sort_by: %s<p>' % (embedding, npapers, input_sort_by))
+print('</div>')
+
+if not input_query is None:
+    cand = candidates_from_query(input_query)
+    if cand is None or len(cand) == 0:
+        print('*** no matches for query: ' + str(query))
+    else:
+        do_papers(cand)
+elif not input_search is None:
+    cand = candidates_from_search(input_search)
+    if cand is None or len(cand) == 0:
+        print('no matches for search: ' + str(search))
+    else:
+        do_papers(cand)
+elif not input_authorid is None:
+    do_authorId(input_authorid)
+elif not input_author is None:
+    do_author(input_author)
+else:
+    do_papers([id_ify(str(input_corpusid))])
+
+
+print('<p><img src="https://jsalt2023.univ-lemans.fr/_resource/Logo/logo-haut.png"/>')
+print('<img src="https://ai.northeastern.edu/wp-content/uploads/2022/02/EIA_Main_Logo_Full_ColorCOMP-e1645543275584.png"/>')
+print('<p><a href="similar_documentation.html">Help</a>')
+print('<a href="https://github.com/kwchurch">GitHub</a>')
+print('<a href="https://www.youtube.com/watch?v=jE49IreXs2U">Final Report (YouTube)</a>')
+print('<a href="https://jsalt2023.univ-lemans.fr/en/index.html">JSALT-2023</a>')
+print('<a href="mailto:k.church@northeastern.edu?subject=Better Together">Comments Appreciated</a>')
+print('<a href="similar.BETA.html">BETA Version</a>')
+print("</body>")
+print("</html>")

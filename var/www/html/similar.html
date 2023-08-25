@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Similar</title>
+	<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700;800&display=swap" rel="stylesheet">
+	<link rel="stylesheet" type="text/css" href="../static/libs/css/mystyle.css">
+	<link rel="stylesheet" type="text/css" href="../static/libs/css/responsive.css">
+</head>
+<body>
+<div class="create_account_main">
+  <div class="forflex">
+    <!--<div class="left_side"></div>-->
+    <div class="right_side">
+      <div class="form_box">
+	<h1 class="acc_heading">Find Similar Papers</h1>
+	<div class="acc_form_cotents">
+	  <p class="acc_p">
+	  </p>
+
+	  <table>
+	    <tr> <th> Search by Paper</th> <th> Search by Author </th></tr>
+	    <tr><td>
+		<table style="background-color:rgba(255, 255, 225);"><tr><td>
+		      <form action="/cgi-bin/similar" method="GET">
+			<label for="embedding"> Embedding:</label> 
+			<select id="embedding" name="embedding">
+			  <option value="proposed">Sort by Scores from ProNE Embedding</option>
+			  <option value="one_hop_cached">Sort by 1-hop neighborbood (cached)</option>
+			  <option value="one_hop">Sort by 1-hop neighborbood (using Semantic Scholar API)</option>
+			  <option value="scincl">Sort by Scores from SciNCL Embedding</option>
+			  <option value="specter">Sort by Scores from Specter Embedding</option>
+			  <option value="specter2">Sort by Scores from Specter2 Embedding</option>
+			  <option value="specter2_from_doug">Sort by Scores from Specter2 Embedding (from Doug)</option>
+			  <option value="s2_recommendations">Recommendations from Semantic Scholar</option>
+                        </select> <p>
+			  <label for="limit"> Limit:</label>
+			  <select id="limit" name="limit">
+			    <option value="20">20</option>
+			    <option value="10">10</option>
+			    <option value="20">20</option>
+			    <option value="50">50</option>
+			    <option value="100">100</option>
+			  </select>
+			<p>
+			  <input onsubmit="" type="text" name="search" id="search" placeholder="Search for Paper (Paper id or keywords + <enter>)">
+	      </form></td></tr></table> </td>
+	      <td>
+		<table style="background-color:rgba(225, 255, 255);"><tr><td>
+		      <form action="/cgi-bin/similar" method="GET">
+			<label for="embedding"> Embedding:</label> 
+			<select id="embedding" name="embedding">
+			  <option value="proposed">Sort by Scores from ProNE Embedding</option>
+			  <option value="one_hop_cached">Sort by 1-hop neighborbood (cached)</option>
+			  <option value="one_hop">Sort by 1-hop neighborbood (using Semantic Scholar API)</option>
+			  <option value="scincl">Sort by Scores from SciNCL Embedding</option>
+			  <option value="specter">Sort by Scores from Specter Embedding</option>
+			  <option value="specter2">Sort by Scores from Specter2 Embedding</option>
+			  <option value="specter2_from_doug">Sort by Scores from Specter2 Embedding (from Doug)</option>
+			  <option value="s2_recommendations">Recommendations from Semantic Scholar</option>
+                        </select> <p>
+			  <label for="limit"> Limit:</label>
+			  <select id="limit" name="limit">
+			    <option value="20">20</option>
+			    <option value="10">10</option>
+			    <option value="20">20</option>
+			    <option value="50">50</option>
+			    <option value="100">100</option>
+			  </select>
+			<p>
+			  <input onsubmit="" type="text" name="author" id="author" placeholder="Search for Author (Author id or name + <enter>)">
+	      </form></td></tr></table> </td>
+	      <td>
+	  </td></tr></table>
+ <p>
+<a href="similar_documentation.html">Help</a>
+<a href="https://github.com/kwchurch">GitHub</a>
+<a href="https://www.youtube.com/watch?v=jE49IreXs2U">Final Report (YouTube)</a>
+<a href="https://jsalt2023.univ-lemans.fr/en/index.html">JSALT-2023</a>
+<a href="mailto:k.church@northeastern.edu?subject=Better Together">Comments Appreciated</a>
+<a href="similar.BETA.html">BETA Version</a>
+<p>
+<img src="https://jsalt2023.univ-lemans.fr/_resource/Logo/logo-haut.png"/>
+<img src="https://ai.northeastern.edu/wp-content/uploads/2022/02/EIA_Main_Logo_Full_ColorCOMP-e1645543275584.png"/>
+
+						<!--
+
+						<span class="already_have">Already have an account? <a href="" class="login_link">Log in</a></span>
+
+						<h2 class="continue_with">
+								<span>or continue with</span>
+						</h2>
+
+						<div class="logos">
+							<a href=""><img src="../static/images/google.png" class="img-fluid"></a>
+							<span class="forspace"></span>
+							<a href="" class="microsoft_logo_link"><img src="../static/images/logos_microsoft-icon.png" class="img-fluid"></a>
+						</div>
+						-->
+					</div>
+				</div>
+				<!-- form box end -->
+			</div>
+		</div>
+	</div>
+	<!-- create account main end -->
+
+</body>
+</html>
